@@ -39,15 +39,16 @@ jobs:
           npx react-native bundle \
             --platform android \
             --dev false \
-            --entry-file index.js \
+            --entry-file index.ts \
             --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res/
+            --assets-dest android/app/src/main/res/ \
+            --reset-cache
 
       - name: 🔐 Generate Release Keystore
         run: |
           keytool -genkeypair \
             -v \
-            -keystore android/marketmind-release.keystore \
+            -keystore android/app/marketmind-release.keystore \
             -alias marketmind \
             -keyalg RSA \
             -keysize 2048 \
@@ -56,23 +57,26 @@ jobs:
             -keypass marketmind123 \
             -dname "CN=MarketMind, OU=App, O=MarketMind, L=Paris, ST=IDF, C=FR"
 
-      - name: 🔐 Configure signing in gradle.properties
+      - name: 🔐 Configure gradle.properties signing
         run: |
-          echo "" >> android/gradle.properties
-          echo "MARKETMIND_STORE_FILE=marketmind-release.keystore" >> android/gradle.properties
-          echo "MARKETMIND_STORE_PASSWORD=marketmind123" >> android/gradle.properties
-          echo "MARKETMIND_KEY_ALIAS=marketmind" >> android/gradle.properties
-          echo "MARKETMIND_KEY_PASSWORD=marketmind123" >> android/gradle.properties
+          cat >> android/gradle.properties << 'EOF'
+          MARKETMIND_STORE_FILE=marketmind-release.keystore
+          MARKETMIND_STORE_PASSWORD=marketmind123
+          MARKETMIND_KEY_ALIAS=marketmind
+          MARKETMIND_KEY_PASSWORD=marketmind123
+          EOF
 
-      - name: 🔐 Configure signing in build.gradle
+      - name: 🔐 Patch build.gradle with signing config
+        working-directory: android/app
         run: |
-          cat > /tmp/signing_patch.py << 'EOF'
-          import re, sys
+          python3 - << 'PYEOF'
+          import re
 
-          with open('android/app/build.gradle', 'r') as f:
+          with open('build.gradle', 'r') as f:
               content = f.read()
 
-          signing_config = """
+          # Add signingConfigs block before android { block's buildTypes
+          signing_block = '''
               signingConfigs {
                   release {
                       storeFile file(MARKETMIND_STORE_FILE)
@@ -81,36 +85,43 @@ jobs:
                       keyPassword MARKETMIND_KEY_PASSWORD
                   }
               }
-          """
+          '''
 
-          # Insert signingConfigs before buildTypes
-          content = content.replace('    buildTypes {', signing_config + '    buildTypes {', 1)
+          # Insert before buildTypes
+          if 'signingConfigs' not in content:
+              content = content.replace('    buildTypes {', signing_block + '    buildTypes {', 1)
 
-          # Set release buildType to use signing config and disable shrink
+          # Patch release build type to use signing config
           content = re.sub(
-              r'(release \{[^}]*?)(\})',
-              r'\1            signingConfig signingConfigs.release\n            minifyEnabled false\n        \2',
+              r'(release\s*\{[^}]*?)(\s*\})',
+              lambda m: m.group(1) + '\n            signingConfig signingConfigs.release\n            minifyEnabled false\n        ' + m.group(2).strip(),
               content,
-              count=1
+              count=1,
+              flags=re.DOTALL
           )
 
-          with open('android/app/build.gradle', 'w') as f:
+          with open('build.gradle', 'w') as f:
               f.write(content)
-          print("build.gradle patched successfully")
-          EOF
-          python3 /tmp/signing_patch.py
+
+          print("✅ build.gradle patched")
+          PYEOF
 
       - name: 🔧 Make Gradle wrapper executable
         run: chmod +x android/gradlew
 
-      - name: 🏗️ Build RELEASE APK (standalone, no Metro)
+      - name: 🏗️ Build Release APK
         working-directory: android
-        run: ./gradlew assembleRelease --no-daemon -Pandroid.enableJetifier=true
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: ✅ Verify APK exists
+        run: |
+          ls -la android/app/build/outputs/apk/release/
+          echo "APK size: $(du -sh android/app/build/outputs/apk/release/app-release.apk | cut -f1)"
 
       - name: 📤 Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: MarketMind-Release.apk
+          name: MarketMind-Production.apk
           path: android/app/build/outputs/apk/release/app-release.apk
           retention-days: 30
 
@@ -120,14 +131,10 @@ jobs:
           echo "## ✅ MarketMind Production APK Ready!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| Build Type | **Release (Production)** |" >> $GITHUB_STEP_SUMMARY
-          echo "| JS Bundle | **Bundled inside APK (no Metro needed)** |" >> $GITHUB_STEP_SUMMARY
-          echo "| APK Size | **$APK_SIZE** |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY  
+          echo "| Build Mode | Release (Production) |" >> $GITHUB_STEP_SUMMARY
+          echo "| JS Bundle | Embedded inside APK ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Metro Required | ❌ No — works fully offline |" >> $GITHUB_STEP_SUMMARY
+          echo "| APK Size | $APK_SIZE |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Download from **Artifacts** section above ⬆️" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Install on Android" >> $GITHUB_STEP_SUMMARY
-          echo "1. Download APK → transfer to phone" >> $GITHUB_STEP_SUMMARY
-          echo "2. Settings → Security → Unknown Sources → Enable" >> $GITHUB_STEP_SUMMARY
-          echo "3. Open the APK → Install → Launch MarketMind 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "📥 Download from **Artifacts** section above" >> $GITHUB_STEP_SUMMARY
