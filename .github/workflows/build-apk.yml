@@ -36,13 +36,11 @@ jobs:
 
       - name: 📦 Bundle JavaScript (PRODUCTION — no Metro needed)
         run: |
-          npx react-native bundle \
+          npx expo export:embed \
             --platform android \
             --dev false \
-            --entry-file index.ts \
             --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res/ \
-            --reset-cache
+            --assets-dest android/app/src/main/res/
 
       - name: 🔐 Generate Release Keystore
         run: |
@@ -75,7 +73,7 @@ jobs:
           with open('build.gradle', 'r') as f:
               content = f.read()
 
-          # Add signingConfigs block before android { block's buildTypes
+          # 1. Define signingConfigs.release
           signing_block = '''
               signingConfigs {
                   release {
@@ -90,11 +88,20 @@ jobs:
           # Insert before buildTypes
           if 'signingConfigs' not in content:
               content = content.replace('    buildTypes {', signing_block + '    buildTypes {', 1)
+          else:
+              # If signingConfigs already exists (e.g. for debug), add release inside it
+              content = re.sub(
+                  r'signingConfigs\s*\{',
+                  'signingConfigs {\n        release {\n            storeFile file(MARKETMIND_STORE_FILE)\n            storePassword MARKETMIND_STORE_PASSWORD\n            keyAlias MARKETMIND_KEY_ALIAS\n            keyPassword MARKETMIND_KEY_PASSWORD\n        }',
+                  content,
+                  count=1
+              )
 
-          # Patch release build type to use signing config
+          # 2. Assign signingConfig to release buildType
+          # We look for release { ... } inside buildTypes
           content = re.sub(
               r'(release\s*\{[^}]*?)(\s*\})',
-              lambda m: m.group(1) + '\n            signingConfig signingConfigs.release\n            minifyEnabled false\n        ' + m.group(2).strip(),
+              r'\1\n            signingConfig signingConfigs.release\n            minifyEnabled false\n        \2',
               content,
               count=1,
               flags=re.DOTALL
@@ -133,7 +140,7 @@ jobs:
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY  
           echo "| Build Mode | Release (Production) |" >> $GITHUB_STEP_SUMMARY
-          echo "| JS Bundle | Embedded inside APK ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bundle Tool | npx expo export:embed ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| Metro Required | ❌ No — works fully offline |" >> $GITHUB_STEP_SUMMARY
           echo "| APK Size | $APK_SIZE |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
