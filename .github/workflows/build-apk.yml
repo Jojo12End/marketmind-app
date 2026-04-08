@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android APK (Production)
 
 on:
   push:
@@ -28,26 +28,106 @@ jobs:
       - name: 📥 Install dependencies
         run: npm install --legacy-peer-deps
 
-      - name: 🏗️ Run Expo Prebuild (generate Android folder)
+      - name: 🏗️ Expo Prebuild (generate native Android project)
         run: npx expo prebuild --platform android --clean --no-install
 
-      - name: 🔐 Make Gradle Wrapper executable
+      - name: 📁 Create assets directory
+        run: mkdir -p android/app/src/main/assets
+
+      - name: 📦 Bundle JavaScript (PRODUCTION — no Metro needed)
+        run: |
+          npx react-native bundle \
+            --platform android \
+            --dev false \
+            --entry-file index.js \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res/
+
+      - name: 🔐 Generate Release Keystore
+        run: |
+          keytool -genkeypair \
+            -v \
+            -keystore android/marketmind-release.keystore \
+            -alias marketmind \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass marketmind123 \
+            -keypass marketmind123 \
+            -dname "CN=MarketMind, OU=App, O=MarketMind, L=Paris, ST=IDF, C=FR"
+
+      - name: 🔐 Configure signing in gradle.properties
+        run: |
+          echo "" >> android/gradle.properties
+          echo "MARKETMIND_STORE_FILE=marketmind-release.keystore" >> android/gradle.properties
+          echo "MARKETMIND_STORE_PASSWORD=marketmind123" >> android/gradle.properties
+          echo "MARKETMIND_KEY_ALIAS=marketmind" >> android/gradle.properties
+          echo "MARKETMIND_KEY_PASSWORD=marketmind123" >> android/gradle.properties
+
+      - name: 🔐 Configure signing in build.gradle
+        run: |
+          cat > /tmp/signing_patch.py << 'EOF'
+          import re, sys
+
+          with open('android/app/build.gradle', 'r') as f:
+              content = f.read()
+
+          signing_config = """
+              signingConfigs {
+                  release {
+                      storeFile file(MARKETMIND_STORE_FILE)
+                      storePassword MARKETMIND_STORE_PASSWORD
+                      keyAlias MARKETMIND_KEY_ALIAS
+                      keyPassword MARKETMIND_KEY_PASSWORD
+                  }
+              }
+          """
+
+          # Insert signingConfigs before buildTypes
+          content = content.replace('    buildTypes {', signing_config + '    buildTypes {', 1)
+
+          # Set release buildType to use signing config and disable shrink
+          content = re.sub(
+              r'(release \{[^}]*?)(\})',
+              r'\1            signingConfig signingConfigs.release\n            minifyEnabled false\n        \2',
+              content,
+              count=1
+          )
+
+          with open('android/app/build.gradle', 'w') as f:
+              f.write(content)
+          print("build.gradle patched successfully")
+          EOF
+          python3 /tmp/signing_patch.py
+
+      - name: 🔧 Make Gradle wrapper executable
         run: chmod +x android/gradlew
 
-      - name: 🏗️ Build Debug APK
+      - name: 🏗️ Build RELEASE APK (standalone, no Metro)
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleRelease --no-daemon -Pandroid.enableJetifier=true
 
-      - name: 📤 Upload Debug APK
+      - name: 📤 Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: marketmind-debug.apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: MarketMind-Release.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
           retention-days: 30
 
       - name: 🎉 Build Summary
         run: |
-          echo "## ✅ MarketMind APK Ready!" >> $GITHUB_STEP_SUMMARY
+          APK_SIZE=$(du -sh android/app/build/outputs/apk/release/app-release.apk | cut -f1)
+          echo "## ✅ MarketMind Production APK Ready!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Download the APK from the **Artifacts** section above." >> $GITHUB_STEP_SUMMARY
-          echo "Install it on Android by enabling **Unknown Sources**." >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Type | **Release (Production)** |" >> $GITHUB_STEP_SUMMARY
+          echo "| JS Bundle | **Bundled inside APK (no Metro needed)** |" >> $GITHUB_STEP_SUMMARY
+          echo "| APK Size | **$APK_SIZE** |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download from **Artifacts** section above ⬆️" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Install on Android" >> $GITHUB_STEP_SUMMARY
+          echo "1. Download APK → transfer to phone" >> $GITHUB_STEP_SUMMARY
+          echo "2. Settings → Security → Unknown Sources → Enable" >> $GITHUB_STEP_SUMMARY
+          echo "3. Open the APK → Install → Launch MarketMind 🚀" >> $GITHUB_STEP_SUMMARY
